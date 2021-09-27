@@ -65,6 +65,8 @@ pub mod pallet {
 		KittyCreated(T::AccountId, u32, Kitty),
 		/// A new kitten is bred. \[owner, kitty_id, kitty\]
 		KittyBred(T::AccountId, u32, Kitty),
+		/// A kitty is transferred. \[from, to, kitty_id\]
+		KittyTransferred(T::AccountId, T::AccountId, u32),
 	}
 
 	#[pallet::error]
@@ -85,31 +87,19 @@ pub mod pallet {
 		pub fn create(origin: OriginFor<T>) -> DispatchResult {
 			let sender = ensure_signed(origin)?;
 
-			// TODO: refactor this method to use
-			// `Self::random_value` and `Self::get_next_kitty_id`
-			// to simplify the implementation
+			let kitty_id = Self::get_next_kitty_id()?;
 
-			NextKittyId::<T>::try_mutate(|next_id| -> DispatchResult {
-				let current_id = *next_id;
-				*next_id = next_id.checked_add(1).ok_or(ArithmeticError::Overflow)?;
+			// Generate a random 128bit value
+			let dna = Self::random_value(&sender);
 
-				// Generate a random 128bit value
-				let payload = (
-					<pallet_randomness_collective_flip::Pallet<T> as Randomness<T::Hash, T::BlockNumber>>::random_seed().0,
-					&sender,
-					<frame_system::Pallet<T>>::extrinsic_index(),
-				);
-				let dna = payload.using_encoded(blake2_128);
+			// Create and store kitty
+			let kitty = Kitty(dna);
+			Kitties::<T>::insert(&sender, kitty_id, &kitty);
 
-				// Create and store kitty
-				let kitty = Kitty(dna);
-				Kitties::<T>::insert(&sender, current_id, &kitty);
+			// Emit event
+			Self::deposit_event(Event::KittyCreated(sender, kitty_id, kitty));
 
-				// Emit event
-				Self::deposit_event(Event::KittyCreated(sender, current_id, kitty));
-
-				Ok(())
-			})
+			Ok(())
 		}
 
 		/// Breed kitties
@@ -143,11 +133,31 @@ pub mod pallet {
 
 			Ok(())
 		}
+
+		/// Transfer a kitty to new owner
+		#[pallet::weight(1000)]
+		pub fn transfer(origin: OriginFor<T>, to: T::AccountId, kitty_id: u32) -> DispatchResult {
+			let sender = ensure_signed(origin)?;
+
+			Kitties::<T>::try_mutate_exists(sender.clone(), kitty_id, |kitty| -> DispatchResult {
+				if sender == to {
+					ensure!(kitty.is_some(), Error::<T>::InvalidKittyId);
+					return Ok(());
+				}
+
+				let kitty = kitty.take().ok_or(Error::<T>::InvalidKittyId)?;
+
+				Kitties::<T>::insert(&to, kitty_id, kitty);
+
+				Self::deposit_event(Event::KittyTransferred(sender, to, kitty_id));
+
+				Ok(())
+			})
+		}
 	}
 }
 
 fn combine_dna(dna1: u8, dna2: u8, selector: u8) -> u8 {
-	// TODO: finish this implementation
 	// selector[bit_index] == 0 -> use dna1[bit_index]
 	// selector[bit_index] == 1 -> use dna2[bit_index]
 	// e.g.
@@ -155,7 +165,7 @@ fn combine_dna(dna1: u8, dna2: u8, selector: u8) -> u8 {
 	// dna1		= 0b10101010
 	// dna2		= 0b00001111
 	// result	= 0b10101011
-	0
+	(!selector & dna1) | (selector & dna2)
 }
 
 impl<T: Config> Pallet<T> {
@@ -168,7 +178,12 @@ impl<T: Config> Pallet<T> {
 	}
 
 	fn random_value(sender: &T::AccountId) -> [u8; 16] {
-		// TODO: finish this implementation
-		Default::default()
+		// Generate a random 128bit value
+		let payload = (
+			<pallet_randomness_collective_flip::Pallet<T> as Randomness<T::Hash, T::BlockNumber>>::random_seed().0,
+			&sender,
+			<frame_system::Pallet<T>>::extrinsic_index(),
+		);
+		payload.using_encoded(blake2_128)
 	}
 }
